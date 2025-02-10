@@ -20,3 +20,10 @@ svg {
     fill: black;
     text-anchor: middle;
 }
+
+#tooltip {
+    position: absolute;
+    visibility: hidden;
+    background: white;
+    padding: 5px;
+    border: 1px solid gray;
