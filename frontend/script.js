@@ -3,7 +3,8 @@ const nodes = [
     { id: "Memory", value: 20 },
     { id: "Filesystem", value: 20 },
     { id: "Network", value: 20 },
-    { id: "Drivers", value: 20 }
+    { id: "Drivers", value: 20 },
+    { id: "Processes", value: 20 }
 ];
 
 const links = [
@@ -12,7 +13,8 @@ const links = [
     { source: "Scheduler", target: "Network" },
     { source: "Scheduler", target: "Drivers" },
     { source: "Memory", target: "Filesystem" },
-    { source: "Memory", target: "Network" }
+    { source: "Memory", target: "Network" },
+    { source: "Processes", target: "Scheduler" }
 ];
 
 const width = window.innerWidth;
@@ -37,7 +39,7 @@ const node = svg.selectAll("circle")
     .enter().append("circle")
     .attr("class", "node")
     .attr("r", d => d.value)
-    .call(drag(simulation));
+    .call(drag(simulation));  // Вызов функции drag()
 
 const text = svg.selectAll("text")
     .data(nodes)
@@ -62,6 +64,40 @@ simulation.on("tick", () => {
         .attr("y", d => d.y);
 });
 
+// Подключение WebSocket
+const socket = new WebSocket("wss://ring-0.sh/ws");
+
+socket.onmessage = function(event) {
+    const data = JSON.parse(event.data);
+    console.log("Обновление данных:", data);
+    // Обновляем узлы
+    nodes.forEach(node => {
+        if (node.id === "Scheduler") node.value = data.cpu / 2;
+        if (node.id === "Memory") node.value = data.memory / 2;
+        if (node.id === "Processes") node.value = data.processes.length / 10;
+    });
+
+    // Анимация изменения размеров узлов
+    node.transition()
+        .duration(500)
+        .attr("r", d => d.value)
+        .style("fill", d => d.value > 30 ? "red" : "steelblue");
+};
+
+// Всплывающие подсказки
+const tooltip = d3.select("#tooltip");
+
+node.on("mouseover", function(event, d) {
+    tooltip.style("visibility", "visible")
+           .text(`${d.id}: ${d.value}`);
+}).on("mousemove", function(event) {
+    tooltip.style("top", (event.pageY + 10) + "px")
+           .style("left", (event.pageX + 10) + "px");
+}).on("mouseout", function() {
+    tooltip.style("visibility", "hidden");
+});
+
+// 🔹 **Добавляем недостающую функцию drag()**
 function drag(simulation) {
     function dragstarted(event, d) {
         if (!event.active) simulation.alphaTarget(0.3).restart();
@@ -84,22 +120,3 @@ function drag(simulation) {
         .on("start", dragstarted)
         .on("drag", dragged)
         .on("end", dragended);
-}
-
-// Подключение WebSocket для обновления данных в реальном времени
-const socket = new WebSocket("ws://localhost:8000/ws");
-
-socket.onmessage = function(event) {
-    const data = JSON.parse(event.data);
-    console.log("Обновление данных:", data);
-
-    // Изменяем размер узлов в зависимости от загрузки CPU и памяти
-    nodes.forEach(node => {
-        if (node.id === "Scheduler") node.value = data.cpu / 2;
-        if (node.id === "Memory") node.value = data.memory / 2;
-    });
-
-    node.transition()
-        .duration(500)
-        .attr("r", d => d.value);
-};
