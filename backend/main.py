@@ -1,73 +1,75 @@
+import subprocess
 from fastapi import FastAPI, WebSocket
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 import psutil
 import json
 import asyncio
 
 app = FastAPI()
 
-# Разрешаем CORS для взаимодействия с фронтендом (если он на другом домене)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://ring-0.sh"],  # Используем только нужный домен
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def get_network_connections():
+    """Получаем список активных сетевых соединений и сопоставляем их с процессами."""
+    connections = []
+    pid_map = {p.info['pid']: p.info['name'] for p in psutil.process_iter(['pid', 'name'])}
 
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["ring-0.sh", "127.0.0.1", "localhost", "*"])
+    for conn in psutil.net_connections(kind="inet"):
+        if conn.status == "ESTABLISHED" and conn.laddr and conn.raddr:
+            pid = conn.pid
 
-@app.get("/")
-async def root():
-    """Тестовый эндпоинт, проверяем, работает ли FastAPI"""
-    return {"message": "FastAPI is running"}
+            # Альтернативный метод: поиск PID через lsof, если psutil не нашел его
+            if not pid:
+                try:
+                    result = subprocess.run(
+                        ["sudo", "lsof", "-i", f"tcp:{conn.laddr.port}"],
+                        capture_output=True, text=True
+                    )
+                    lines = result.stdout.split("\n")
+                    for line in lines[1:]:  # Пропускаем заголовок
+                        parts = line.split()
+                        if len(parts) > 1 and parts[1].isdigit():
+                            pid = int(parts[1])
+                            break
+                except Exception as e:
+                    print("⚠️ Ошибка при вызове lsof:", e)
 
-def get_network_activity():
-    """Получаем статистику сетевых интерфейсов из /proc/net/dev."""
-    with open("/proc/net/dev", "r") as f:
-        lines = f.readlines()[2:]  # Пропускаем заголовки
-        network_data = {}
-        for line in lines:
-            parts = line.split()
-            interface = parts[0].strip(":")
-            received = int(parts[1])  # Входящий трафик (байты)
-            transmitted = int(parts[9])  # Исходящий трафик (байты)
-            network_data[interface] = {"rx": received, "tx": transmitted}
-        return network_data
+            connections.append({
+                "pid": pid if pid else "Unknown",
+                "process": pid_map.get(pid, "Unknown"),
+                "local_ip": conn.laddr.ip,
+                "local_port": conn.laddr.port,
+                "remote_ip": conn.raddr.ip,
+                "remote_port": conn.raddr.port,
+                "status": conn.status
+            })
 
-def get_running_processes():
-    """Получаем список активных процессов из /proc."""
-    return [p.info for p in psutil.process_iter(['pid', 'name', 'cpu_percent'])]
+    print(f"🔗 Найдено соединений: {len(connections)}")
+    return connections
 
 async def get_kernel_data():
     """Формируем JSON с системными метриками."""
-    while True:
-        data = {
-            "cpu": psutil.cpu_percent(),
-            "memory": psutil.virtual_memory().percent,
-            "processes": get_running_processes(),
-            "network": get_network_activity()
-        }
-        yield json.dumps(data)
-        await asyncio.sleep(1)
+    try:
+        while True:
+            data = {
+                "cpu": psutil.cpu_percent(percpu=True),
+                "memory": psutil.virtual_memory().percent,
+                "network": get_network_connections(),  # Добавляем сеть
+                "processes": {p.pid: {"name": p.info["name"], "ppid": p.info["ppid"]} 
+                              for p in psutil.process_iter(['pid', 'name', 'ppid'])}
+            }
+            print(f"📡 Отправка данных: {json.dumps(data, indent=2)}")  # Лог отправки данных
+            yield json.dumps(data)
+            await asyncio.sleep(1)
+    except asyncio.CancelledError:
+        print("🔴 WebSocket-соединение закрыто.")
+        raise  
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket-сервер, отправляющий корректные JSON-ответы"""
+    """WebSocket-сервер для отправки данных на фронтенд."""
     await websocket.accept()
-    await websocket.send_json({"status": "connected"})  # Сообщаем, что подключение установлено
-
-    while True:
-        try:
-            # Отправляем тестовый JSON с CPU, RAM и процессами
-            data = {
-                "cpu": psutil.cpu_percent(),
-                "memory": psutil.virtual_memory().percent,
-                "processes": [{"pid": p.pid, "name": p.name()} for p in psutil.process_iter(['pid', 'name'])][:10]  # Ограничим до 10 процессов
-            }
-            await websocket.send_json(data)  # Отправляем JSON
-            await asyncio.sleep(1)  # Раз в секунду
-        except Exception as e:
-            print(f"Ошибка WebSocket: {e}")
-            break
+    try:
+        async for data in get_kernel_data():
+            await websocket.send_text(data)
+    except asyncio.CancelledError:
+        print("🔴 WebSocket-соединение прервано.")
+    finally:
+        print("🟡 WebSocket-закрытие корректно обработано.")
