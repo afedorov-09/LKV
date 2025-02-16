@@ -20,11 +20,11 @@ jobs:
         echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
         echo "${{ secrets.EC2_SSH_KEY }}"
-        ssh-keyscan -H ubuntu@3.70.234.196 >> ~/.ssh/known_hosts
+        ssh-keyscan 3.70.234.196 >> ~/.ssh/known_hosts
 
     - name: Деплой кода на EC2
       run: |
-        ssh eubuntu@3.70.234.196 << 'EOF'
+        ssh ubuntu@3.70.234.196 << 'EOF'
           cd /var/www/html/backend
           git pull origin main
           source venv/bin/activate
