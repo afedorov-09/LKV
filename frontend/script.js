@@ -68,20 +68,22 @@ simulation.on("tick", () => {
 const socket = new WebSocket("wss://ring-0.sh/ws");
 
 socket.onmessage = function(event) {
-    const data = JSON.parse(event.data);
-    console.log("Обновление данных:", data);
-    // Обновляем узлы
-    nodes.forEach(node => {
-        if (node.id === "Scheduler") node.value = data.cpu / 2;
-        if (node.id === "Memory") node.value = data.memory / 2;
-        if (node.id === "Processes") node.value = data.processes.length / 10;
-    });
+    try {
+        let data = JSON.parse(event.data);
+        console.log("Получены данные:", data);
 
-    // Анимация изменения размеров узлов
-    node.transition()
-        .duration(500)
-        .attr("r", d => d.value)
-        .style("fill", d => d.value > 30 ? "red" : "steelblue");
+        // Проверяем, есть ли массив `processes`
+        if (Array.isArray(data.processes)) {
+            data.processes.forEach((process, index) => {
+                console.log(`Процесс ${index}: ${process.name} (PID: ${process.pid})`);
+            });
+        } else {
+            console.warn("processes не массив или не определён:", data.processes);
+        }
+
+    } catch (error) {
+        console.error("Ошибка парсинга JSON:", error, "Получено:", event.data);
+    }
 };
 
 // Всплывающие подсказки
