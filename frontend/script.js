@@ -1,142 +1,114 @@
-const width = window.innerWidth, height = window.innerHeight;
+const width = window.innerWidth;
+const height = window.innerHeight;
 
-// Удаляем старый SVG перед созданием нового
-d3.select("svg").remove();
-
-// Создаём новый SVG
-const svg = d3.select("body")
-    .append("svg")
+const svg = d3.select("body").append("svg")
     .attr("width", width)
     .attr("height", height);
 
-const linkGroup = svg.append("g").attr("class", "links");
-const nodeGroup = svg.append("g").attr("class", "nodes");
+const colorMap = {
+    "kernel": "#8AB4F8",
+    "process": "#34A853",
+    "socket": "#9E9E9E", // Серый цвет для порта
+    "status": "#FBBC05",  // Желтый цвет для статуса
+    "internet": "#9E9E9E"
+};
 
-let nodes = new Map();
-let links = [];
-let updateTimeout = null; // Таймер для обновления графа
-
-const simulation = d3.forceSimulation()
-    .force("link", d3.forceLink().id(d => d.id).distance(200)) // Увеличил расстояние между узлами
-    .force("charge", d3.forceManyBody().strength(-150)) // Уменьшил отталкивание
-    .force("center", d3.forceCenter(width / 2, height / 2))
-    .force("collide", d3.forceCollide(30)) // Предотвращаем наложение узлов
-    .force("x", d3.forceX(width / 2).strength(0.1))
-    .force("y", d3.forceY(height / 2).strength(0.1));
+const kernelX = width * 0.2;
+const kernelY = height / 2;
+const boundaryX = width * 0.7;
 
 const socket = new WebSocket("wss://ring-0.sh/ws");
 
-socket.onopen = function() {
-    console.log("✅ WebSocket подключен");
-};
-
-socket.onerror = function(error) {
-    console.error("❌ Ошибка WebSocket:", error);
-};
-
-socket.onmessage = function(event) {
+socket.onopen = () => console.log("WebSocket подключен");
+socket.onmessage = (event) => {
     const data = JSON.parse(event.data);
-    console.log("🔹 Получены данные:", data);
-
-    if (!data.processes || !data.network) {
-        console.error("⚠ Нет данных о процессах или сети!");
-        return;
-    }
-
-    console.log("🔗 Сетевые соединения:", data.network);
-
-    let newNodes = new Map();
-    let newLinks = [];
-
-    // Добавляем основные компоненты ядра
-    const coreNodes = [
-        { id: "Scheduler", group: "core" },
-        { id: "Processes", group: "core" },
-        { id: "Memory", group: "core", value: data.memory },
-        { id: "Network", group: "core" }
-    ];
-    coreNodes.forEach(node => newNodes.set(node.id, nodes.get(node.id) || node));
-
-    newLinks.push({ source: "Processes", target: "Scheduler" });
-    newLinks.push({ source: "Memory", target: "Scheduler" });
-    newLinks.push({ source: "Network", target: "Scheduler" });
-
-    // Добавляем процессы
-    Object.entries(data.processes).forEach(([pid, process]) => {
-        newNodes.set(pid, { id: pid, name: process.name, group: "process", value: 10 });
-    });
-
-    // Добавляем сетевые соединения
-    data.network.forEach(conn => {
-        if (!newNodes.has(conn.pid)) {
-            newNodes.set(conn.pid, { id: conn.pid, name: `PID ${conn.pid}`, group: "process", value: 10 });
-        }
-
-        if (newNodes.has(conn.pid) && newNodes.has("Network")) {
-            newLinks.push({ source: conn.pid, target: "Network", type: "network" });
-        } else {
-            console.warn(`⚠ Пропущено соединение: PID ${conn.pid} → Network (узел не найден)`);
-        }
-    });
-
-    nodes = newNodes;
-    links = newLinks;
-
-    console.log(`📊 Узлов: ${nodes.size}, связей: ${links.length}`);
-
-    if (updateTimeout) clearTimeout(updateTimeout);
-    updateTimeout = setTimeout(updateGraph, 1000);
+    console.log("Получены данные:", data);
+    const graph = transformDataToGraph(data);
+    updateGraph(graph);
 };
 
-function updateGraph() {
-    console.log("🔄 Обновляем граф...");
+function transformDataToGraph(data) {
+    const nodes = [{ id: "kernel", label: "Linux Kernel", type: "kernel", x: kernelX, y: kernelY }];
+    const links = [];
+    const sockets = new Map();
 
-    const nodeArray = Array.from(nodes.values());
+    let processY = kernelY - (Object.keys(data.processes).length * 20) / 2;
 
-    const link = linkGroup.selectAll(".link")
-        .data(links, d => `${d.source.id}-${d.target.id}`)
-        .join("line")
+    Object.entries(data.processes).forEach(([pid, proc]) => {
+        nodes.push({ id: `p${pid}`, label: proc.name, type: "process", x: kernelX + 100, y: processY });
+        links.push({ source: "kernel", target: `p${pid}` });
+        processY += 40;
+    });
+
+    let socketY = kernelY - (data.network.length * 30) / 2;
+
+    data.network.forEach((conn) => {
+        const processId = `p${conn.pid}`;
+        const socketId = `s${conn.local_port}`;
+        const externalId = `ext_${conn.remote_ip}_${conn.remote_port}`;
+
+        if (!sockets.has(socketId)) {
+            nodes.push(
+                { id: socketId, label: conn.local_port, type: "socket", x: boundaryX - 120, y: socketY },
+                { id: `status_${conn.local_port}`, label: conn.status, type: "status", x: boundaryX - 80, y: socketY }
+            );
+            sockets.set(socketId, socketY);
+            socketY += 50;
+        }
+
+        links.push({ source: processId, target: socketId });
+        links.push({ source: socketId, target: `status_${conn.local_port}` });
+
+        if (!nodes.some(n => n.id === externalId)) {
+            nodes.push({ id: externalId, label: `${conn.remote_ip}:${conn.remote_port}`, type: "internet", x: boundaryX, y: sockets.get(socketId) });
+        }
+
+        links.push({ source: `status_${conn.local_port}`, target: externalId });
+    });
+
+    return { nodes, links };
+}
+
+function updateGraph(graph) {
+    svg.selectAll("*").remove();
+
+    svg.selectAll(".link")
+        .data(graph.links)
+        .enter().append("line")
         .attr("class", "link")
-        .attr("stroke", d => d.type === "network" ? "green" : "#999")
-        .attr("stroke-width", d => d.type === "network" ? 2 : 1.5);
+        .attr("x1", d => graph.nodes.find(n => n.id === d.source).x)
+        .attr("y1", d => graph.nodes.find(n => n.id === d.source).y)
+        .attr("x2", d => graph.nodes.find(n => n.id === d.target).x)
+        .attr("y2", d => graph.nodes.find(n => n.id === d.target).y)
+        .style("stroke", "#777")
+        .style("stroke-width", 2);
 
-    const node = nodeGroup.selectAll(".node")
-        .data(nodeArray, d => d.id)
-        .join("circle")
+    svg.selectAll(".node")
+        .data(graph.nodes)
+        .enter().append("rect")
         .attr("class", "node")
-        .attr("r", d => d.value || 10)
-        .attr("fill", d => d.group === "process" ? "red" : "blue")
-        .call(d3.drag()
-            .on("start", dragStarted)
-            .on("drag", dragged)
-            .on("end", dragEnded));
+        .attr("x", d => d.x - (d.type === "kernel" ? 20 : 10))
+        .attr("y", d => d.y - 10)
+        .attr("width", d => (d.type === "socket" || d.type === "status" ? 50 : 20))
+        .attr("height", 20)
+        .style("fill", d => colorMap[d.type]);
 
-    const labels = nodeGroup.selectAll(".label")
-        .data(nodeArray, d => d.id)
-        .join("text")
+    svg.selectAll(".label")
+        .data(graph.nodes)
+        .enter().append("text")
         .attr("class", "label")
-        .attr("dx", 10)
-        .attr("dy", 4)
-        .text(d => d.name || d.id)
-        .style("font-size", "10px");
+        .attr("x", d => d.x + (d.type === "status" ? 30 : 15))
+        .attr("y", d => d.y + 5)
+        .attr("text-anchor", "middle")
+        .style("font-size", "12px")
+        .text(d => d.label);
 
-    simulation.nodes(nodeArray);
-    simulation.force("link").links(links);
-    simulation.alpha(0.1).restart();
+    svg.append("line")
+        .attr("x1", boundaryX)
+        .attr("y1", 0)
+        .attr("x2", boundaryX)
+        .attr("y2", height)
+        .style("stroke", "#333")
+        .style("stroke-width", 2);
 }
 
-// Функции для перетаскивания узлов
-function dragStarted(event, d) {
-    if (!event.active) simulation.alphaTarget(0.3).restart();
-    d.fx = d.x;
-    d.fy = d.y;
-}
-function dragged(event, d) {
-    d.fx = event.x;
-    d.fy = event.y;
-}
-function dragEnded(event, d) {
-    if (!event.active) simulation.alphaTarget(0);
-    d.fx = null;
-    d.fy = null;
-}
